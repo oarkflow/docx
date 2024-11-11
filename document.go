@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/oarkflow/expr"
+	"github.com/oarkflow/jet"
 	"golang.org/x/net/html"
 )
 
@@ -47,11 +48,13 @@ type Document struct {
 
 	filePlaceholders map[string][]*Placeholder
 	fileReplacers    map[string]*Replacer
+	mapData          PlaceholderMap
+	defaultMapData   PlaceholderMap
 }
 
 // Open will open and parse the file pointed to by path.
 // The file must be a valid docx file or an error is returned.
-func Open(path string) (*Document, error) {
+func Open(path string, data ...PlaceholderMap) (*Document, error) {
 	fh, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("unable to open .docx docxFile: %s", err)
@@ -61,8 +64,14 @@ func Open(path string) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to open zip reader: %s", err)
 	}
-
-	return newDocument(&rc.Reader, path, fh)
+	doc, err := newDocument(&rc.Reader, path, fh)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 0 {
+		doc.defaultMapData = data[0]
+	}
+	return doc, nil
 }
 
 // OpenBytes allows to create a Document from a byte slice.
@@ -131,6 +140,13 @@ func newDocument(zipFile *zip.Reader, path string, docxFile *os.File) (*Document
 
 // ReplaceAll will iterate over all files and perform the replacement according to the PlaceholderMap.
 func (d *Document) ReplaceAll(placeholderMap PlaceholderMap) error {
+	if d.defaultMapData == nil {
+		d.defaultMapData = PlaceholderMap{}
+	}
+	for key, value := range d.defaultMapData {
+		placeholderMap[key] = value
+	}
+	d.mapData = placeholderMap
 	for name := range d.files {
 		changedBytes, err := d.replace(placeholderMap, name)
 		if err != nil {
@@ -347,6 +363,14 @@ func (d *Document) parseArchive() error {
 // It is important to note that the target file cannot be the same as the path of this document.
 // If the path is not yet created, the function will attempt to MkdirAll() before creating the file.
 func (d *Document) WriteToFile(file string) error {
+	if d.mapData != nil {
+		parser := jet.NewWithMemory(jet.WithDelims("{", "}"))
+		template, err := parser.ParseTemplate(file, d.mapData, true)
+		if err != nil {
+			return err
+		}
+		file = template
+	}
 	if file == d.path {
 		return fmt.Errorf("WriteToFile cannot write into the original docx archive while it'str open")
 	}
